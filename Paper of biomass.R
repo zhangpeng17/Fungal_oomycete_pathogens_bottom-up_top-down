@@ -1,0 +1,1120 @@
+setwd("D:\\Desktop\\海北72样方\\Paper_biomass")
+
+library(readxl)
+library(tidyverse)
+library(FD)
+library(vegan)
+library(picante)
+library(V.PhyloMaker)
+library(lme4)
+library(lmerTest)
+library(piecewiseSEM)
+library(nlme)
+library(sciplot)
+library(ggsci)
+library(viridis)
+library(ggpubr)
+library(eoffice)
+library(sjstats)
+
+na.zero <- function (x) {
+  x[is.na(x)] <- 0
+  return(x)
+}
+
+theme1 <- theme_test()+
+  theme(text = element_text(size = 26,family="sans"))
+
+biomass2022 <- read_xlsx("data0\\2022海北72样方病虫害生物量数据.xlsx",sheet = "Sheet1")
+
+### Prepare data  ####
+PL <-  biomass2022 %>% 
+  na.omit() %>% filter(Species!="凋落物")%>% 
+  mutate(severity=(b0*0+b1*1+b2*2+b3*3+b4*4+b5*5)/6/(b0+b1+b2+b3+b4+b5)) %>%
+  group_by(Plot) %>% 
+  summarise(PL=sum(severity*biomass,na.rm = T)/sum(biomass,na.rm = T)) %>%
+  select(Plot,PL)
+
+Litter <- biomass2022  %>% filter(Species=="凋落物")%>% 
+  group_by(Plot,Treat,Fencing) %>% 
+  summarise(Litter=mean(biomass)) %>%
+  select(Plot,Litter,Treat,Fencing)
+
+Biomass <- biomass2022 %>% 
+  na.omit() %>% filter(Species!="凋落物")%>% 
+  group_by(Plot,Block,Treat,Fencing,A,B,N) %>% 
+  summarise(Biomass=sum(biomass)) 
+
+Com <- biomass2022 %>% 
+  na.omit() %>% 
+  select(Plot,Species,biomass) %>%
+  spread(key = "Species",value = "biomass") %>% na.zero()
+
+SR <- specnumber(Com[,-1],MARGIN = 1)
+SR <- as.data.frame(SR,Com[,1])
+Shannon <- diversity(Com[,-1],MARGIN = 1)
+Simpson <- diversity(Com[,-1],MARGIN = 1,index = "simp")
+Pielou <- Shannon/log(SR)
+SR$Plot <- Com$Plot
+
+Result <- Biomass %>% left_join(SR)%>% left_join(PL) %>% left_join(Litter) %>% 
+  left_join(CWM) #%>% write.csv("Result_Biomass.csv")
+
+### calculate CWM CWM_fixed and ITV  ####
+
+trait <- read_xlsx("data0\\trait.xlsx")%>%
+  mutate(LDMC=dry_weight/fresh_weight)
+
+## corrplot
+
+trait_mean <- trait %>% group_by(Treat,Fencing,Species) %>% 
+  summarise(Thick=mean(Thick,na.rm=TRUE),
+            N_height=mean(N_height,na.rm=TRUE),
+            M_height=mean(M_height,na.rm=TRUE),
+            LDMC=mean(LDMC,na.rm=TRUE)) %>% 
+  right_join(Litter %>% select(Plot,Treat,Fencing)) %>% as.data.frame()
+
+SLA <- trait %>% group_by(Treat,Fencing,Species) %>% filter(SLA<1000) %>%   
+  summarise(SLA=mean(SLA,na.rm=TRUE))
+trait_mean <- trait_mean %>% left_join(SLA)
+
+Plot<- 'abc'
+Thick<-0
+N_height<-0
+M_height<-0
+LDMC<-0
+SLA <- 0
+CWM.cover.result <- data.frame(Plot,Thick,N_height,M_height,LDMC,SLA)
+CWM.cover.result$Plot <- as.character(CWM.cover.result$Plot)
+str(CWM.cover.result)
+
+Trait <- c('Thick','N_height','M_height','LDMC','SLA')
+Plot <- unique(trait_mean$Plot)
+#cycle
+for (i in 1:5) {
+  for (v in 1:72) {
+    
+    Trait.i <- Trait[i]
+    Plot.v <- Plot[v]
+    
+    Data.i <- trait_mean%>%
+      dplyr::select('Plot','Species',Trait.i)%>%
+      filter(Plot==Plot.v)
+    
+    names(Data.i)<-c('Plot','Species','Trait_i')
+    Data.i<-Data.i%>%
+      filter(Trait_i != 'NaN')
+    
+    Cover<-biomass2022 %>%select(Plot,Species,biomass) %>% 
+      filter(Species %in% unique(Data.i$Species))%>%
+      filter(Plot==Plot.v)
+    Data.i<- Data.i%>%
+      filter(Species %in% unique(Data.i$Species))
+    
+    data.db <-merge(Data.i,Cover,by=c('Plot','Species'))%>%
+      filter(biomass != 0)
+    
+    data.db.trait <- dplyr::select(data.db,Species,Trait_i)
+    row.names(data.db.trait) <- data.db.trait$Species
+    data.db.trait<-subset(data.db.trait,select = Trait_i)
+    
+    data.db.cover <- dplyr::select(data.db,Species,biomass)%>%
+      spread(key=Species,value=biomass)
+    
+    CWM <- dbFD(x=data.db.trait, a=data.db.cover, calc.FRic = F, calc.FDiv = F, w.abun = T, calc.CWM = TRUE)
+    
+    CWM.cover.result[v,1] <- Plot.v
+    CWM.cover.result[v,i+1] <- CWM$CWM[1,1]
+    # 
+    # FDis.cover.result[v,1] <- Plot.v
+    # FDis.cover.result[v,i+1] <- CWM$FDis
+    
+  }
+  
+}
+CWM.biomass_2022 <- CWM.cover.result%>%
+  gather(key=key,value = value,-Plot)%>%
+  mutate(CWM='CWM')%>%
+  unite(key2,CWM,key,sep="_")%>%
+  spread(key=key2,value = value) 
+
+trait0 <- trait_mean %>% filter(Treat=="CK",Fencing==0) %>% 
+  group_by(Treat,Fencing,Species) %>% 
+  summarise(Thick=mean(Thick,na.rm=TRUE),
+            N_height=mean(N_height,na.rm=TRUE),
+            M_height=mean(M_height,na.rm=TRUE),
+            LDMC=mean(LDMC,na.rm=TRUE),SLA=mean(SLA,na.rm=TRUE)) %>% 
+  as.data.frame() %>% filter(Species!="草甸马先蒿",Species!="老鹳草",Species!="南山龙胆",Species!="蝇子草")
+rownames(trait0) <- trait0$Species
+
+CWM_fixed <- dbFD(trait0[,4:8],Com %>% select(rownames(trait0)))
+
+CWM_fixed <- CWM_fixed$CWM 
+CWM_fixed$Plot <- CWM.biomass_2022$Plot
+
+CWM <- CWM.biomass_2022 %>% left_join(CWM_fixed) %>% 
+  mutate(ITV_Thick=CWM_Thick-Thick,
+         ITV_N_height=CWM_N_height-N_height,
+         ITV_M_height=CWM_M_height-M_height,
+         ITV_LDMC=CWM_LDMC-LDMC,
+         ITV_SLA=CWM_SLA-SLA) %>% write.csv("Plot3/CWM2.csv")
+
+
+
+
+### Result data  ####
+
+Result_biomass <- read.csv("data0\\Result_Biomass.csv")
+
+# Result_biomass$A <- as.logical(Result_biomass$A)
+# Result_biomass$B <- as.logical(Result_biomass$B)
+# Result_biomass$N <- as.logical(Result_biomass$N)
+# Result_biomass$Fencing <- as.logical(Result_biomass$Fencing)
+str(Result_biomass)
+ResultA <- Result_biomass %>% filter(B!=1)
+ResultB <- Result_biomass %>% filter(A!=1)
+
+## Community composition ~ Treatment (adonis)  ####
+ComA <- biomass2022 %>% 
+  na.omit() %>% filter(Species!="凋落物",B!=1)%>% 
+  select(Plot,Species,biomass) %>%
+  spread(key = "Species",value = "biomass") %>% na.zero() %>% as.data.frame()
+rownames(ComA) <- ComA$Plot
+
+ComB <- biomass2022 %>% 
+  na.omit() %>% filter(Species!="凋落物",A!=1)%>% 
+  select(Plot,Species,biomass) %>%
+  spread(key = "Species",value = "biomass") %>% na.zero() %>% as.data.frame()
+rownames(ComB) <- ComB$Plot
+
+adonis2(ComA[,-1]~Fencing*A*N,ResultA)
+
+adonis2(ComB[,-1]~Fencing*B*N,ResultB)
+
+
+
+
+
+
+
+
+## Linear mixed model   ####
+## Biomass ~ Treatment  ####
+hist(resid(model))
+shapiro.test(resid(model))
+
+model <- lmer(SR~Fencing*A*N+(1|Block),
+              ResultA)
+summary(model)
+anova(model)
+pairs(emmeans::emmeans(model,~A|Fencing|N))
+model <- lmer(SR~Fencing*B*N+(1|Block),
+              ResultB)
+summary(model)
+anova(model)
+pairs(emmeans::emmeans(model,~B|Fencing|N))
+
+model <- lmer(log(PL)~Fencing*A*N+(1|Block),
+              ResultA)
+summary(model)
+anova(model)
+model <- lmer(log(PL)~Fencing*B*N+(1|Block),
+              ResultB)
+summary(model)
+anova(model)
+
+shapiro.test(resid(model))
+model <- lmer(Biomass~Fencing*A*N+(1|Block),
+              ResultA)
+anova(model)
+model <- lmer(Biomass~Fencing*B*N+(1|Block),
+              ResultB)
+summary(model)
+anova(model)
+
+## CWM ~ Treatment   ####
+
+hist(resid(model))
+shapiro.test(resid(model))
+
+model <- lmer(log(CWM_N_height)~Fencing*A*N+(1|Block),
+              ResultA)
+pairs(emmeans::emmeans(model,~A|Fencing|N))
+a1 <- anova(model)
+model <- lmer(CWM_N_height~Fencing*B*N+(1|Block),
+              ResultB)
+pairs(emmeans::emmeans(model,~B|Fencing|N))
+b1 <- anova(model)
+
+model <- lmer(N_height~Fencing*A*N+(1|Block),
+              ResultA)
+pairs(emmeans::emmeans(model,~A|Fencing|N))
+a2 <- anova(model)
+model <- lmer(N_height~Fencing*B*N+(1|Block),
+              ResultB)
+pairs(emmeans::emmeans(model,~B|Fencing|N))
+b2 <- anova(model)
+
+model <- lmer(ITV_N_height~Fencing*A*N+(1|Block),
+              ResultA)
+pairs(emmeans::emmeans(model,~A|Fencing|N))
+a3 <- anova(model)
+model <- lmer(ITV_N_height~Fencing*B*N+(1|Block),
+              ResultB)
+pairs(emmeans::emmeans(model,~B|Fencing|N))
+b3 <- anova(model)
+
+a <- data.frame(a1[,5:6],a2[,5:6],a3[,5:6])
+b <- data.frame(b1[,5:6],b2[,5:6],b3[,5:6])
+data.frame(a,b) %>% write.csv("Plot3/CWM_N_height.csv")
+
+hist(resid(model))
+shapiro.test(resid(model))
+
+model <- lmer(CWM_M_height~Fencing*A*N+(1|Block),
+              ResultA)
+pairs(emmeans::emmeans(model,~A|Fencing|N))
+summary(model)
+a1 <- anova(model)
+model <- lmer(CWM_M_height~Fencing*B*N+(1|Block),
+              ResultB)
+pairs(emmeans::emmeans(model,~B|Fencing|N))
+summary(model)
+b1 <- anova(model)
+
+model <- lmer(M_height~Fencing*A*N+(1|Block),
+              ResultA)
+summary(model)
+a2 <- anova(model)
+model <- lmer(M_height~Fencing*B*N+(1|Block),
+              ResultB)
+pairs(emmeans::emmeans(model,~B|Fencing|N))
+summary(model)
+b2 <- anova(model)
+
+model <- lmer(ITV_M_height~Fencing*A*N+(1|Block),
+              ResultA)
+pairs(emmeans::emmeans(model,~A|Fencing|N))
+summary(model)
+a3 <- anova(model)
+model <- lmer(ITV_M_height~Fencing*B*N+(1|Block),
+              ResultB)
+pairs(emmeans::emmeans(model,~B|Fencing|N))
+summary(model)
+b3 <- anova(model)
+
+a <- data.frame(a1[,5:6],a2[,5:6],a3[,5:6])
+b <- data.frame(b1[,5:6],b2[,5:6],b3[,5:6])
+data.frame(a,b) %>% write.csv("Plot3/CWM_M_height.csv")
+
+
+
+
+
+
+
+
+
+## Functional group  ####
+Group <- biomass2022 %>%
+  na.omit() %>% filter(Species!="凋落物") %>% 
+  mutate(severity=(b0*0+b1*1+b2*2+b3*3+b4*4+b5*5)/6/(b0+b1+b2+b3+b4+b5))%>%
+  group_by(Plot,Treat,Block,Fencing,A,B,N,Grass) %>%
+  summarise(Biomass=sum(biomass,na.rm = T),
+            PL=sum(severity*biomass,na.rm = T)/sum(biomass,na.rm = T)) %>% as.data.frame() 
+
+hist(resid(model))
+shapiro.test(resid(model))
+
+model <- lmer(Biomass~Fencing*A*N+(1|Block),
+              Group %>% filter(B!=1,Grass!=0))
+summary(model)
+anova(model)
+pairs(emmeans::emmeans(model,~A|Fencing|N))
+model <- lmer(Biomass~Fencing*B*N+(1|Block),
+              Group %>% filter(A!=1,Grass!=0))
+summary(model)
+anova(model)
+pairs(emmeans::emmeans(model,~B|Fencing|N))
+
+model <- lmer(Biomass~Fencing*A*N+(1|Block),
+              Group %>% filter(B!=1,Grass!=1))
+summary(model)
+anova(model)
+pairs(emmeans::emmeans(model,~A|Fencing|N))
+model <- lmer(Biomass~Fencing*B*N+(1|Block),
+              Group %>% filter(A!=1,Grass!=1))
+summary(model)
+anova(model)
+pairs(emmeans::emmeans(model,~B|Fencing|N))
+
+Group$Grass[which(Group$Grass==0)] <- "Forb"
+Group$Grass[which(Group$Grass==1)] <- "Grass"
+Group$Grass <- factor(Group$Grass,levels = c("Grass","Forb"))
+Group$Fencing[which(Group$Fencing=="1")] <- "Herbivores enclosure"
+Group$Fencing[which(Group$Fencing=="0")] <- "Ambient"
+
+Group$Treat <- factor(Group$Treat,levels = 
+                        c("CK","A","B","N","N+A","N+B"))
+Group$Fencing <- as.factor(Group$Fencing)
+Group$A <- as.factor(Group$A)
+Group$B <- as.factor(Group$B)
+Group$N <- as.factor(Group$N)
+
+
+p1 <- ResultA %>% 
+  group_by(Fencing,N,A) %>% 
+  summarise(mean1=mean(Biomass),se1=se(Biomass))%>% 
+  ggplot(aes(N,mean1,color=N,shape=A))+geom_point(size=4,position = position_dodge(0.7))+
+  geom_linerange(aes(min=mean1-se1, max=mean1+se1),position = position_dodge(0.7), size=1.2) +
+  scale_color_viridis(discrete=TRUE, option = 'viridis')+
+  scale_x_discrete(name="",labels=c("Control","Nitrogen"))+
+  facet_wrap(~Fencing)+
+  ylim(50,150)+
+  labs(x="",y="Community biomass (g)")+theme1+
+  theme(legend.position = "top",
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 0),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid")) 
+p2 <- Group %>% filter(B!=1,Grass=="Grass") %>% group_by(Treat,A,N,Fencing,Grass) %>% 
+  summarise(mean=mean(Biomass),se=se(Biomass))%>% 
+  ggplot(aes(N,mean,color=N,shape=A))+
+  geom_point(size=4,position = position_dodge(0.7))+
+  geom_linerange(aes(min=mean-se, max=mean+se),position = position_dodge(0.7), size=1.2) +
+  scale_color_viridis(discrete=TRUE, option = 'viridis')+
+  scale_x_discrete(name="",labels=c("Control","Nitrogen"))+
+  facet_wrap(~Fencing)+
+  labs(x="",y="Poaceae biomass (g)")+theme1+
+  theme(legend.position = "top",
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 0),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid"))
+p3 <- Group %>% filter(B!=1,Grass=="Forb") %>% group_by(Treat,A,N,Fencing,Grass) %>% 
+  summarise(mean=mean(Biomass),se=se(Biomass))%>% 
+  ggplot(aes(N,mean,color=N,shape=A))+
+  geom_point(size=4,position = position_dodge(0.7))+
+  geom_linerange(aes(min=mean-se, max=mean+se),position = position_dodge(0.7), size=1.2) +
+  scale_color_viridis(discrete=TRUE, option = 'viridis')+
+  scale_x_discrete(name="",labels=c("Control","Nitrogen"))+
+  facet_wrap(~Fencing)+
+  ylim(10,100)+
+  labs(x="",y="Other grasses biomass (g)")+theme1+
+  theme(legend.position = "top",
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 0),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid"))
+p4 <- ResultB %>% 
+  group_by(Fencing,N,B) %>% 
+  summarise(mean1=mean(Biomass),se1=se(Biomass))%>% ggplot(aes(N,mean1,color=N,shape=B))+geom_point(size=4,position = position_dodge(0.7))+
+  geom_linerange(aes(min=mean1-se1, max=mean1+se1),position = position_dodge(0.7), size=1.2) +
+  scale_color_viridis(discrete=TRUE, option = 'viridis')+
+  scale_x_discrete(name="",labels=c("Control","Nitrogen"))+
+  scale_shape_manual(values = c(19,15))+
+  facet_grid(~Fencing)+
+  ylim(50,150)+
+  labs(x="",y="Community biomass (g)")+theme1+
+  theme(legend.position = "top",
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 0),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid")) 
+p5 <- Group %>% filter(A!=1,Grass=="Grass") %>% group_by(Treat,B,N,Fencing,Grass) %>% 
+  summarise(mean=mean(Biomass),se=se(Biomass))%>% 
+  ggplot(aes(N,mean,color=N,shape=B))+
+  geom_point(size=4,position = position_dodge(0.7))+
+  geom_linerange(aes(min=mean-se, max=mean+se),position = position_dodge(0.7), size=1.2) +
+  scale_color_viridis(discrete=TRUE, option = 'viridis')+
+  scale_x_discrete(name="",labels=c("Control","Nitrogen"))+
+  scale_shape_manual(values = c(19,15))+
+  facet_wrap(~Fencing)+
+  ylim(10,100)+
+  labs(x="",y="Poaceae biomass (g)")+theme1+
+  theme(legend.position = "top",
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 0),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid"))
+p6 <- Group %>% filter(A!=1,Grass=="Forb") %>% group_by(Treat,B,N,Fencing,Grass) %>% 
+  summarise(mean=mean(Biomass),se=se(Biomass))%>% 
+  ggplot(aes(N,mean,color=N,shape=B))+
+  geom_point(size=4,position = position_dodge(0.7))+
+  geom_linerange(aes(min=mean-se, max=mean+se),position = position_dodge(0.7), size=1.2) +
+  scale_color_viridis(discrete=TRUE, option = 'viridis')+
+  scale_x_discrete(name="",labels=c("Control","Nitrogen"))+
+  scale_shape_manual(values = c(19,15))+
+  facet_wrap(~Fencing)+
+  ylim(10,100)+
+  labs(x="",y="Other grasses biomass (g)")+theme1+
+  theme(legend.position = "top",
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 0),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid"))
+
+p0 <- ggarrange(p1,p2,p3,p4,p5,p6,labels = c("(a)","(b)","(c)","(e)","(d)","(f)"),nrow = 2,ncol = 3,align = "hv",legend = "top",common.legend = T,hjust = 0)
+
+topptx(p0,"Plot3/Biomass+grass~Treatment.pptx",height=12,width=20)
+
+## Plot  ####
+## Biomass and PL~Treatment   ####
+Result_biomass$Fencing[which(Result_biomass$Fencing=="1")] <- "Herbivores enclosure"
+Result_biomass$Fencing[which(Result_biomass$Fencing=="0")] <- "Ambient"
+
+Result_biomass$Treat <- factor(Result_biomass$Treat,levels = 
+                                 c("CK","A","B","N","N+A","N+B"))
+Result_biomass$Fencing <- as.factor(Result_biomass$Fencing)
+Result_biomass$A <- as.factor(Result_biomass$A)
+Result_biomass$B <- as.factor(Result_biomass$B)
+Result_biomass$N <- as.factor(Result_biomass$N)
+
+ResultA <- Result_biomass %>% filter(B!=1)
+ResultB <- Result_biomass %>% filter(A!=1)
+
+
+## Biomass,SR,PL~Treatment    ####
+p1 <- ResultA %>% 
+  group_by(Fencing,N,A) %>% 
+  summarise(mean1=mean(Biomass),se1=se(Biomass))%>% 
+  ggplot(aes(N,mean1,color=N,shape=A))+geom_point(size=4,position = position_dodge(0.7))+
+  geom_linerange(aes(min=mean1-se1, max=mean1+se1),position = position_dodge(0.7), size=1.2) +
+  scale_color_viridis(discrete=TRUE, option = 'viridis')+
+  scale_x_discrete(name="",labels=c("Control","Nitrogen"))+
+  facet_wrap(~Fencing)+
+  labs(x="",y="")+theme1+
+  theme(legend.position = "top",
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 0),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid")) 
+p2 <- ResultA %>% 
+  group_by(Fencing,N,A) %>% 
+  summarise(mean1=mean(SR),se1=se(SR))%>% 
+  ggplot(aes(N,mean1,color=N,shape=A))+geom_point(size=4,position = position_dodge(0.7))+
+  geom_linerange(aes(min=mean1-se1, max=mean1+se1),position = position_dodge(0.7), size=1.2) +
+  scale_color_viridis(discrete=TRUE, option = 'viridis')+
+  scale_x_discrete(name="",labels=c("Control","Nitrogen"))+
+  facet_wrap(~Fencing)+
+  labs(x="",y="")+theme1+
+  theme(legend.position = "top",
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 0),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid")) 
+p3 <- ResultA %>% 
+  group_by(Fencing,N,A) %>% 
+  summarise(mean1=mean(PL*100),se1=se(PL*100))%>% 
+  ggplot(aes(N,mean1,color=N,shape=A))+geom_point(size=4,position = position_dodge(0.7))+
+  geom_linerange(aes(min=mean1-se1, max=mean1+se1),position = position_dodge(0.7), size=1.2) +
+  scale_color_viridis(discrete=TRUE, option = 'viridis')+
+  scale_x_discrete(name="",labels=c("Control","Nitrogen"))+
+  facet_wrap(~Fencing)+
+  labs(x="",y="")+theme1+
+  theme(legend.position = "top",
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 0),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid")) 
+p4 <- ResultB %>% 
+  group_by(Fencing,N,B) %>% 
+  summarise(mean1=mean(Biomass),se1=se(Biomass))%>% ggplot(aes(N,mean1,color=N,shape=B))+geom_point(size=4,position = position_dodge(0.7))+
+  geom_linerange(aes(min=mean1-se1, max=mean1+se1),position = position_dodge(0.7), size=1.2) +
+  scale_color_viridis(discrete=TRUE, option = 'viridis')+
+  scale_x_discrete(name="",labels=c("Control","Nitrogen"))+
+  scale_shape_manual(values = c(19,15))+
+  facet_grid(~Fencing)+
+  labs(x="",y="")+theme1+
+  theme(legend.position = "top",
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 0),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid")) 
+p5 <- ResultB %>% 
+  group_by(Fencing,N,B) %>% 
+  summarise(mean1=mean(SR),se1=se(SR))%>% ggplot(aes(N,mean1,color=N,shape=B))+geom_point(size=4,position = position_dodge(0.7))+
+  geom_linerange(aes(min=mean1-se1, max=mean1+se1),position = position_dodge(0.7), size=1.2) +
+  scale_color_viridis(discrete=TRUE, option = 'viridis')+
+  scale_x_discrete(name="",labels=c("Control","Nitrogen"))+
+  scale_shape_manual(values = c(19,15))+
+  facet_grid(~Fencing)+
+  labs(x="",y="")+theme1+
+  theme(legend.position = "top",
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 0),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid"))
+p6 <- ResultB %>% 
+  group_by(Fencing,N,B) %>% 
+  summarise(mean1=mean(PL*100),se1=se(PL*100))%>% ggplot(aes(N,mean1,color=N,shape=B))+geom_point(size=4,position = position_dodge(0.7))+
+  geom_linerange(aes(min=mean1-se1, max=mean1+se1),position = position_dodge(0.7), size=1.2) +
+  scale_color_viridis(discrete=TRUE, option = 'viridis')+
+  scale_x_discrete(name="",labels=c("Control","Nitrogen"))+
+  scale_shape_manual(values = c(19,15))+
+  facet_grid(~Fencing)+
+  labs(x="",y="")+theme1+
+  theme(legend.position = "top",
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 0),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid"))
+
+p0 <- ggarrange(p1,p2,p3,p4,p5,p6,labels = c("(a)","(b)","(c)","(e)","(d)","(f)"),nrow = 2,ncol = 3,align = "hv",legend = "top",common.legend = T,hjust = 0)
+
+topptx(p0,"Plot3/Biomass+SR+PL~Treatment.pptx",height=12,width=20)
+
+
+
+
+## Biomass,grass+Others~Treatment    ####
+
+p1 <- ResultA %>% filter(Fencing=="Ambient") %>% 
+  group_by(Fencing,N,A) %>% 
+  summarise(mean1=mean(Biomass),se1=se(Biomass))%>% 
+  ggplot(aes(N,mean1,color=A,shape=A))+geom_point(size=6,position = position_dodge(0.7))+
+  geom_linerange(aes(min=mean1-se1, max=mean1+se1),position = position_dodge(0.7), size=1.2) +
+  scale_color_viridis(discrete=TRUE, option = 'viridis')+
+  scale_x_discrete(name="",labels=c("Control","Nitrogen"))+
+  labs(x="",y="Community biomass (g)")+theme1+
+  theme(legend.position = "top",
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 0),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid")) 
+
+p2 <- Group %>% filter(B!=1,Fencing=="Ambient",Grass=="Grass") %>% group_by(Treat,A,N,Fencing,Grass) %>% 
+  summarise(mean=mean(Biomass),se=se(Biomass))%>% 
+  ggplot(aes(N,mean,color=A,shape=A))+
+  geom_point(size=6,position = position_dodge(0.7))+
+  geom_linerange(aes(min=mean-se, max=mean+se),position = position_dodge(0.7), size=1.2) +
+  scale_color_viridis(discrete=TRUE, option = 'viridis')+
+  scale_x_discrete(name="",labels=c("Control","Nitrogen"))+
+  labs(x="",y="Poaceae biomass (g)")+theme1+
+  theme(legend.position = "top",
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 0),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid"))
+p3 <- Group %>% filter(B!=1,Fencing=="Ambient",Grass=="Forb") %>% group_by(Treat,A,N,Fencing,Grass) %>% 
+  summarise(mean=mean(Biomass),se=se(Biomass))%>% 
+  ggplot(aes(N,mean,color=A,shape=A))+
+  geom_point(size=6,position = position_dodge(0.7))+
+  geom_linerange(aes(min=mean-se, max=mean+se),position = position_dodge(0.7), size=1.2) +
+  scale_color_viridis(discrete=TRUE, option = 'viridis')+
+  scale_x_discrete(name="",labels=c("Control","Nitrogen"))+
+  ylim(10,100)+
+  labs(x="",y="Other grasses biomass (g)")+theme1+
+  theme(legend.position = "top",
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 0),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid"))
+p4 <- ResultB %>% filter(N=="0") %>% 
+  group_by(Fencing,N,B) %>% 
+  summarise(mean1=mean(Biomass),se1=se(Biomass))%>% ggplot(aes(Fencing,mean1,color=B,shape=B))+geom_point(size=6,position = position_dodge(0.7))+
+  geom_linerange(aes(min=mean1-se1, max=mean1+se1),position = position_dodge(0.7), size=1.2) +
+  scale_color_viridis(discrete=TRUE, option = 'viridis')+
+  scale_x_discrete(name="",labels=c("Control","Enclosure"))+
+  scale_shape_manual(values = c(19,15))+
+  ylim(50,120)+
+  labs(x="",y="Community biomass (g)")+theme1+
+  theme(legend.position = "top",
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 0),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid")) 
+p5 <- Group %>% filter(A!=1,N=="0",Grass=="Grass") %>% group_by(Treat,B,N,Fencing,Grass) %>% 
+  summarise(mean=mean(Biomass),se=se(Biomass))%>% 
+  ggplot(aes(Fencing,mean,color=B,shape=B))+
+  geom_point(size=6,position = position_dodge(0.7))+
+  geom_linerange(aes(min=mean-se, max=mean+se),position = position_dodge(0.7), size=1.2) +
+  scale_color_viridis(discrete=TRUE, option = 'viridis')+
+  scale_x_discrete(name="",labels=c("Control","Enclosure"))+
+  scale_shape_manual(values = c(19,15))+
+  #ylim(10,100)+
+  labs(x="",y="Poaceae biomass (g)")+theme1+
+  theme(legend.position = "top",
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 0),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid"))
+p6 <- Group %>% filter(A!=1,N=="0",Grass=="Forb") %>% group_by(Treat,B,N,Fencing,Grass) %>% 
+  summarise(mean=mean(Biomass),se=se(Biomass))%>% 
+  ggplot(aes(Fencing,mean,color=B,shape=B))+
+  geom_point(size=6,position = position_dodge(0.7))+
+  geom_linerange(aes(min=mean-se, max=mean+se),position = position_dodge(0.7), size=1.2) +
+  scale_color_viridis(discrete=TRUE, option = 'viridis')+
+  scale_x_discrete(name="",labels=c("Control","Enclosure"))+
+  scale_shape_manual(values = c(19,15))+
+  ylim(10,100)+
+  labs(x="",y="Other grasses biomass (g)")+theme1+
+  theme(legend.position = "top",
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 0),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid"))
+
+p0 <- ggarrange(p1,p2,p3,p4,p5,p6,labels = c("(a)","(b)","(c)","(d)","(e)","(f)"),nrow = 2,ncol = 3,align = "hv",legend = "top",common.legend = T,hjust = 0)
+
+topptx(p0,"Plot3/Biomass+grass+Other~Treatment.pptx",height=12,width=16)
+
+
+
+
+
+
+
+
+## CWM~Treatment    ####
+
+p1 <- ResultA %>% select(Fencing,N,A,LDMC,SLA,Thick,N_height,M_height,ITV_LDMC,ITV_SLA,ITV_Thick,ITV_N_height,ITV_M_height) %>% 
+  group_by(Fencing,N,A) %>% 
+  summarise(mean1=mean(N_height),se1=se(N_height))%>% ggplot(aes(N,mean1,color=N,shape=A))+geom_point(size=4,position = position_dodge(0.7))+
+  geom_linerange(aes(min=mean1-se1, max=mean1+se1),position = position_dodge(0.7), size=1.2) +
+  scale_color_viridis(discrete=TRUE, option = 'viridis')+
+  scale_x_discrete(name="",labels=c("Control","Nitrogen"))+
+  facet_wrap(~Fencing)+
+  labs(x="",y="")+theme1+
+  theme(legend.position = "top",
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 0),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid")) 
+p2 <- ResultA %>% select(Fencing,N,A,LDMC,SLA,Thick,N_height,M_height,ITV_LDMC,ITV_SLA,ITV_Thick,ITV_N_height,ITV_M_height) %>% 
+  group_by(Fencing,N,A) %>% 
+  summarise(mean1=mean(ITV_N_height),se1=se(ITV_N_height))%>% ggplot(aes(N,mean1,color=N,shape=A))+geom_point(size=4,position = position_dodge(0.7))+
+  geom_linerange(aes(min=mean1-se1, max=mean1+se1),position = position_dodge(0.7), size=1.2) +
+  scale_color_viridis(discrete=TRUE, option = 'viridis')+
+  scale_x_discrete(name="",labels=c("Control","Nitrogen"))+
+  facet_grid(~Fencing)+
+  labs(x="",y="")+theme1+
+  theme(legend.position = "top",
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 0),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid")) 
+
+p3 <- ResultB %>% select(Fencing,N,B,LDMC,SLA,Thick,N_height,M_height,ITV_LDMC,ITV_SLA,ITV_Thick,ITV_N_height,ITV_M_height) %>% 
+  group_by(Fencing,N,B) %>% 
+  summarise(mean1=mean(N_height),se1=se(N_height))%>% ggplot(aes(N,mean1,color=N,shape=B))+geom_point(size=4,position = position_dodge(0.7))+
+  geom_linerange(aes(min=mean1-se1, max=mean1+se1),position = position_dodge(0.7), size=1.2) +
+  scale_color_viridis(discrete=TRUE, option = 'viridis')+
+  scale_x_discrete(name="",labels=c("Control","Nitrogen"))+
+  scale_shape_manual(values = c(19,15))+
+  facet_wrap(~Fencing)+
+  labs(x="",y="")+theme1+
+  theme(legend.position = "top",
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 0),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid")) 
+p4 <- ResultB %>% select(Fencing,N,B,LDMC,SLA,Thick,N_height,M_height,ITV_LDMC,ITV_SLA,ITV_Thick,ITV_N_height,ITV_M_height) %>% 
+  group_by(Fencing,N,B) %>% 
+  summarise(mean1=mean(ITV_N_height),se1=se(ITV_N_height))%>% ggplot(aes(N,mean1,color=N,shape=B))+geom_point(size=4,position = position_dodge(0.7))+
+  geom_linerange(aes(min=mean1-se1, max=mean1+se1),position = position_dodge(0.7), size=1.2) +
+  scale_color_viridis(discrete=TRUE, option = 'viridis')+
+  scale_x_discrete(name="",labels=c("Control","Nitrogen"))+
+  scale_shape_manual(values = c(19,15))+
+  facet_grid(~Fencing)+
+  labs(x="",y="")+theme1+
+  theme(legend.position = "top",
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 0),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid")) 
+p5 <- ResultA %>% select(Fencing,N,A,CWM_N_height,LDMC,SLA,Thick,N_height,M_height,ITV_LDMC,ITV_SLA,ITV_Thick,ITV_N_height,ITV_M_height) %>% 
+  group_by(Fencing,N,A) %>% 
+  summarise(mean1=mean(CWM_N_height),se1=se(CWM_N_height))%>% ggplot(aes(N,mean1,color=N,shape=A))+geom_point(size=4,position = position_dodge(0.7))+
+  geom_linerange(aes(min=mean1-se1, max=mean1+se1),position = position_dodge(0.7), size=1.2) +
+  scale_color_viridis(discrete=TRUE, option = 'viridis')+
+  scale_x_discrete(name="",labels=c("Control","Nitrogen"))+
+  facet_grid(~Fencing)+
+  labs(x="",y="")+theme1+
+  theme(legend.position = "top",
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 0),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid")) 
+
+p6 <- ResultB %>% select(Fencing,N,B,CWM_N_height,LDMC,SLA,Thick,N_height,M_height,ITV_LDMC,ITV_SLA,ITV_Thick,ITV_N_height,ITV_M_height) %>% 
+  group_by(Fencing,N,B) %>% 
+  summarise(mean1=mean(CWM_N_height),se1=se(CWM_N_height))%>% ggplot(aes(N,mean1,color=N,shape=B))+geom_point(size=4,position = position_dodge(0.7))+
+  geom_linerange(aes(min=mean1-se1, max=mean1+se1),position = position_dodge(0.7), size=1.2) +
+  scale_color_viridis(discrete=TRUE, option = 'viridis')+
+  scale_x_discrete(name="",labels=c("Control","Nitrogen"))+
+  scale_shape_manual(values = c(19,15))+
+  facet_wrap(~Fencing)+
+  labs(x="",y="")+theme1+
+  theme(legend.position = "top",
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 0),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid")) 
+
+
+p0 <- ggarrange(p5,p1,p2,p6,p3,p4,labels = c("(a)","(b)","(c)","(e)","(d)","(f)"),nrow = 2,ncol = 3,align = "hv",legend = "top",common.legend = T,hjust = 0)
+
+topptx(p0,"Plot3/Effectvalue_CWM_N_heighth.pptx",height=12,width=20)
+
+p1 <- ResultA %>% select(Fencing,N,A,LDMC,SLA,Thick,N_height,M_height,ITV_LDMC,ITV_SLA,ITV_Thick,ITV_N_height,ITV_M_height) %>% 
+  group_by(Fencing,N,A) %>% 
+  summarise(mean1=mean(M_height),se1=se(M_height))%>% ggplot(aes(N,mean1,color=N,shape=A))+geom_point(size=4,position = position_dodge(0.7))+
+  geom_linerange(aes(min=mean1-se1, max=mean1+se1),position = position_dodge(0.7), size=1.2) +
+  scale_color_viridis(discrete=TRUE, option = 'viridis')+
+  scale_x_discrete(name="",labels=c("Control","Nitrogen"))+
+  facet_wrap(~Fencing)+
+  labs(x="",y="")+theme1+
+  theme(legend.position = "top",
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 0),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid")) 
+p2 <- ResultA %>% select(Fencing,N,A,LDMC,SLA,Thick,N_height,M_height,ITV_LDMC,ITV_SLA,ITV_Thick,ITV_N_height,ITV_M_height) %>% 
+  group_by(Fencing,N,A) %>% 
+  summarise(mean1=mean(ITV_M_height),se1=se(ITV_M_height))%>% ggplot(aes(N,mean1,color=N,shape=A))+geom_point(size=4,position = position_dodge(0.7))+
+  geom_linerange(aes(min=mean1-se1, max=mean1+se1),position = position_dodge(0.7), size=1.2) +
+  scale_color_viridis(discrete=TRUE, option = 'viridis')+
+  scale_x_discrete(name="",labels=c("Control","Nitrogen"))+
+  facet_grid(~Fencing)+
+  labs(x="",y="")+theme1+
+  theme(legend.position = "top",
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 0),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid")) 
+
+p3 <- ResultB %>% select(Fencing,N,B,LDMC,SLA,Thick,N_height,M_height,ITV_LDMC,ITV_SLA,ITV_Thick,ITV_N_height,ITV_M_height) %>% 
+  group_by(Fencing,N,B) %>% 
+  summarise(mean1=mean(M_height),se1=se(M_height))%>% ggplot(aes(N,mean1,color=N,shape=B))+geom_point(size=4,position = position_dodge(0.7))+
+  geom_linerange(aes(min=mean1-se1, max=mean1+se1),position = position_dodge(0.7), size=1.2) +
+  scale_color_viridis(discrete=TRUE, option = 'viridis')+
+  scale_x_discrete(name="",labels=c("Control","Nitrogen"))+
+  scale_shape_manual(values = c(19,15))+
+  facet_wrap(~Fencing)+
+  labs(x="",y="")+theme1+
+  theme(legend.position = "top",
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 0),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid")) 
+p4 <- ResultB %>% select(Fencing,N,B,LDMC,SLA,Thick,N_height,M_height,ITV_LDMC,ITV_SLA,ITV_Thick,ITV_N_height,ITV_M_height) %>% 
+  group_by(Fencing,N,B) %>% 
+  summarise(mean1=mean(ITV_M_height),se1=se(ITV_M_height))%>% ggplot(aes(N,mean1,color=N,shape=B))+geom_point(size=4,position = position_dodge(0.7))+
+  geom_linerange(aes(min=mean1-se1, max=mean1+se1),position = position_dodge(0.7), size=1.2) +
+  scale_color_viridis(discrete=TRUE, option = 'viridis')+
+  scale_x_discrete(name="",labels=c("Control","Nitrogen"))+
+  scale_shape_manual(values = c(19,15))+
+  facet_grid(~Fencing)+
+  labs(x="",y="")+theme1+
+  theme(legend.position = "top",
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 0),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid")) 
+p5 <- ResultA %>% select(Fencing,N,A,CWM_M_height,LDMC,SLA,Thick,N_height,M_height,ITV_LDMC,ITV_SLA,ITV_Thick,ITV_N_height,ITV_M_height) %>% 
+  group_by(Fencing,N,A) %>% 
+  summarise(mean1=mean(CWM_M_height),se1=se(CWM_M_height))%>% ggplot(aes(N,mean1,color=N,shape=A))+geom_point(size=4,position = position_dodge(0.7))+
+  geom_linerange(aes(min=mean1-se1, max=mean1+se1),position = position_dodge(0.7), size=1.2) +
+  scale_color_viridis(discrete=TRUE, option = 'viridis')+
+  scale_x_discrete(name="",labels=c("Control","Nitrogen"))+
+  facet_grid(~Fencing)+
+  labs(x="",y="")+theme1+
+  theme(legend.position = "top",
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 0),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid")) 
+
+p6 <- ResultB %>% select(Fencing,N,B,CWM_M_height,LDMC,SLA,Thick,N_height,M_height,ITV_LDMC,ITV_SLA,ITV_Thick,ITV_N_height,ITV_M_height) %>% 
+  group_by(Fencing,N,B) %>% 
+  summarise(mean1=mean(CWM_M_height),se1=se(CWM_M_height))%>% ggplot(aes(N,mean1,color=N,shape=B))+geom_point(size=4,position = position_dodge(0.7))+
+  geom_linerange(aes(min=mean1-se1, max=mean1+se1),position = position_dodge(0.7), size=1.2) +
+  scale_color_viridis(discrete=TRUE, option = 'viridis')+
+  scale_x_discrete(name="",labels=c("Control","Nitrogen"))+
+  scale_shape_manual(values = c(19,15))+
+  facet_wrap(~Fencing)+
+  labs(x="",y="")+theme1+
+  theme(legend.position = "top",
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 0),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid")) 
+
+
+p0 <- ggarrange(p5,p1,p2,p6,p3,p4,labels = c("(a)","(b)","(c)","(e)","(d)","(f)"),nrow = 2,ncol = 3,align = "hv",legend = "top",common.legend = T,hjust = 0)
+
+topptx(p0,"Plot3/Effectvalue_CWM_M_heighth.pptx",height=12,width=20)
+
+## SEM   ####
+
+SEMA <- Result_biomass %>% filter(B!=1)
+SEMB <- Result_biomass %>% filter(A!=1)
+
+
+model <- psem(lme(Biomass~N_height+N,random = ~1|Block,data=SEMA %>% filter(Fencing!=1)),## multigroup SEM
+              lme(Shannon~N_height+N,random = ~1|Block,data=SEMA%>% filter(Fencing!=1)),
+              lme(N_height~N,random = ~1|Block,data=SEMA%>% filter(Fencing!=1)))
+summary(model)
+multigroup(model,group = "A")
+
+# model <- psem(lmer(Biomass~SR+N_height+N+(1|Block),data=SEMA %>% filter(Fencing!=1)),   
+#               ## multigroup SEM
+#               lmer(SR~N+(1|Block),data=SEMA%>% filter(Fencing!=1)),
+#               lmer(N_height~N+(1|Block),data=SEMA%>% filter(Fencing!=1)))
+# summary(model)
+# multigroup(model,group = "A")
+
+
+model <- psem(lme(Biomass~Shannon+ITV_N_height+Fencing,random = ~1|Block,
+                  data=SEMB %>% filter(N!=1)),
+              lme(Shannon~Fencing,random = ~1|Block,data=SEMB %>% filter(N!=1)),
+              lme(ITV_N_height~Fencing,random = ~1|Block,data=SEMB %>% filter(N!=1)))
+summary(model)
+multigroup(model,group = "B")
+
+# model <- psem(lmer(Biomass~SR+N_height+Fencing+(1|Block),
+#                   data=SEMB %>% filter(N!=1)),
+#               lmer(SR~Fencing+(1|Block),data=SEMB %>% filter(N!=1)),
+#               lmer(N_height~Fencing+(1|Block),data=SEMB %>% filter(N!=1)))
+# summary(model)
+# multigroup(model,group = "B")
+
+SEMB$A <- as.logical(SEMB$A)
+SEMB$B <- as.logical(SEMB$B)
+SEMB$Fencing <- as.logical(SEMB$Fencing)
+
+model <- lme(Biomass~B*Fencing*N-1,random = ~1|Block,data=SEMB)
+anova(model)
+model <- lmer(Biomass~B*Fencing*N+(1|Block),data=SEMB)
+anova(model)
+
+model <- psem(lme(Biomass~SR+N_height+Fencing*N,random = ~1|Block,data=SEMA),   ## OK
+              lme(SR~A*N+A*Fencing+Fencing*N,random = ~1|Block,data=SEMA),
+              lme(N_height~A*N+A*Fencing+Fencing*N+SR,random = ~1|Block,data=SEMA))
+summary(model)
+
+model <- psem(lme(Biomass~SR+N_height+N+B:Fencing+B:N:Fencing,random = ~1|Block,data=SEMB),
+              lme(SR~B*Fencing+N+Fencing+B:N,random = ~1|Block,data=SEMB),
+              lme(N_height~B*Fencing+B*N,random = ~1|Block,data=SEMB))
+summary(model)
+
+model <- psem(lme(Biomass~SR+N_height+O*M+N+O*N,random = ~1|Block,data=SEMB),
+              lme(SR~O*M+N+M+O*N,random = ~1|Block,data=SEMB),
+              lme(N_height~O*M+O*N,random = ~1|Block,data=SEMB))
+summary(model)
+
+## Population level  ####
+
+biomass2022 %>%
+  na.omit() %>% filter(Species!="凋落物")%>% 
+  mutate(severity=(b0*0+b1*1+b2*2+b3*3+b4*4+b5*5)/6/(b0+b1+b2+b3+b4+b5)) %>%
+  left_join(biomass2022 %>% na.omit() %>% filter(Species!="凋落物")%>%
+              group_by(Plot) %>% summarise(SumBiomass=sum(biomass))) %>% 
+  mutate(relative=biomass/SumBiomass) %>% group_by(Fencing,Treat,Species) %>% 
+  summarise(biomass=mean(biomass),severity=mean(severity),relative=mean(relative)) %>% 
+  arrange(desc(relative)) %>% as.data.frame()
+
+population <- read_xlsx("data0\\Population-level.xlsx") %>% 
+  left_join(biomass2022 %>% filter(Species=="异针茅") %>% select(Plot,Fencing,A,B,N,Block))
+
+
+model <- lmer(biomass~A*Fencing*N+(1|Block),population %>% filter(Species=="早熟禾",B!=1))
+anova(model)
+model <- lmer(biomass~A*Fencing*N+(1|Block),population %>% filter(Species=="异针茅",B!=1))
+anova(model)
+model <- lmer(biomass~A*Fencing*N+(1|Block),population %>% filter(Species=="瑞苓草",B!=1))
+anova(model)
+model <- lmer(biomass~A*Fencing*N+(1|Block),population %>% filter(Species=="美丽风毛菊",B!=1))
+anova(model)
+model <- lmer(biomass~A*Fencing*N+(1|Block),population %>% filter(Species=="麻花艽",B!=1))
+anova(model)
+model <- lmer(biomass~A*Fencing*N+(1|Block),population %>% filter(Species=="棘豆",B!=1))
+anova(model)
+model <- lmer(biomass~A*Fencing*N+(1|Block),population %>% filter(Species=="刺参",B!=1))
+anova(model)
+model <- lmer(biomass~A*Fencing*N+(1|Block),population %>% filter(Species=="垂穗披碱草",B!=1))
+anova(model)
+
+model <- lmer(biomass~B*Fencing*N+(1|Block),population %>% filter(Species=="早熟禾",A!=1))
+anova(model)
+model <- lmer(biomass~B*Fencing*N+(1|Block),population %>% filter(Species=="异针茅",A!=1))
+pairs(emmeans::emmeans(model,~B|Fencing|N))
+anova(model)
+model <- lmer(biomass~B*Fencing*N+(1|Block),population %>% filter(Species=="瑞苓草",A!=1))
+anova(model)
+model <- lmer(biomass~B*Fencing*N+(1|Block),population %>% filter(Species=="美丽风毛菊",A!=1))
+anova(model)
+model <- lmer(biomass~B*Fencing*N+(1|Block),population %>% filter(Species=="麻花艽",A!=1))
+anova(model)
+model <- lmer(biomass~B*Fencing*N+(1|Block),population %>% filter(Species=="棘豆",A!=1))
+anova(model)
+model <- lmer(biomass~B*Fencing*N+(1|Block),population %>% filter(Species=="刺参",A!=1))
+anova(model)
+model <- lmer(biomass~B*Fencing*N+(1|Block),population %>% filter(Species=="垂穗披碱草",A!=1))
+anova(model)
+
+
+model <- lmer(biomass~A+(1|Block),population %>% filter(Fencing==0,N==0,Species=="早熟禾",B!=1))
+anova(model)
+model <- lmer(biomass~A+(1|Block),population %>% filter(Fencing==0,N==1,Species=="早熟禾",B!=1))
+anova(model)
+model <- lmer(biomass~A+(1|Block),population %>% filter(Fencing==1,N==0,Species=="早熟禾",B!=1))
+anova(model)
+model <- lmer(biomass~A+(1|Block),population %>% filter(Fencing==1,N==1,Species=="早熟禾",B!=1))
+anova(model)
+
+model <- lmer(biomass~B+(1|Block),population %>% filter(Fencing==0,N==0,Species=="早熟禾",A!=1))
+anova(model)
+model <- lmer(biomass~B+(1|Block),population %>% filter(Fencing==0,N==1,Species=="早熟禾",A!=1))
+anova(model)
+model <- lmer(biomass~B+(1|Block),population %>% filter(Fencing==1,N==0,Species=="早熟禾",A!=1))
+anova(model)
+model <- lmer(biomass~B+(1|Block),population %>% filter(Fencing==1,N==1,Species=="早熟禾",A!=1))
+anova(model)
+
+model <- lmer(biomass~A+(1|Block),population %>% filter(Fencing==0,N==0,Species=="异针茅",B!=1))
+anova(model)
+model <- lmer(biomass~A+(1|Block),population %>% filter(Fencing==0,N==1,Species=="异针茅",B!=1))
+anova(model)
+model <- lmer(biomass~A+(1|Block),population %>% filter(Fencing==1,N==0,Species=="异针茅",B!=1))
+anova(model)
+model <- lmer(biomass~A+(1|Block),population %>% filter(Fencing==1,N==1,Species=="异针茅",B!=1))
+anova(model)
+
+model <- lmer(biomass~B+(1|Block),population %>% filter(Fencing==0,N==0,Species=="异针茅",A!=1))
+anova(model)
+model <- lmer(biomass~B+(1|Block),population %>% filter(Fencing==0,N==1,Species=="异针茅",A!=1))
+anova(model)
+model <- lmer(biomass~B+(1|Block),population %>% filter(Fencing==1,N==0,Species=="异针茅",A!=1))
+anova(model)
+model <- lmer(biomass~B+(1|Block),population %>% filter(Fencing==1,N==1,Species=="异针茅",A!=1))
+anova(model)
+
+model <- lmer(biomass~A+(1|Block),population %>% filter(Fencing==0,N==0,Species=="瑞苓草",B!=1))
+anova(model)
+model <- lmer(biomass~A+(1|Block),population %>% filter(Fencing==0,N==1,Species=="瑞苓草",B!=1))
+anova(model)
+model <- lmer(biomass~A+(1|Block),population %>% filter(Fencing==1,N==0,Species=="瑞苓草",B!=1))
+anova(model)
+model <- lmer(biomass~A+(1|Block),population %>% filter(Fencing==1,N==1,Species=="瑞苓草",B!=1))
+anova(model)
+
+model <- lmer(biomass~B+(1|Block),population %>% filter(Fencing==0,N==0,Species=="瑞苓草",A!=1))
+anova(model)
+model <- lmer(biomass~B+(1|Block),population %>% filter(Fencing==0,N==1,Species=="瑞苓草",A!=1))
+anova(model)
+model <- lmer(biomass~B+(1|Block),population %>% filter(Fencing==1,N==0,Species=="瑞苓草",A!=1))
+anova(model)
+model <- lmer(biomass~B+(1|Block),population %>% filter(Fencing==1,N==1,Species=="瑞苓草",A!=1))
+anova(model)
+
+model <- lmer(biomass~A+(1|Block),population %>% filter(Fencing==0,N==0,Species=="美丽风毛菊",B!=1))
+anova(model)
+model <- lmer(biomass~A+(1|Block),population %>% filter(Fencing==0,N==1,Species=="美丽风毛菊",B!=1))
+anova(model)
+model <- lmer(biomass~A+(1|Block),population %>% filter(Fencing==1,N==0,Species=="美丽风毛菊",B!=1))
+anova(model)
+model <- lmer(biomass~A+(1|Block),population %>% filter(Fencing==1,N==1,Species=="美丽风毛菊",B!=1))
+anova(model)
+
+model <- lmer(biomass~B+(1|Block),population %>% filter(Fencing==0,N==0,Species=="美丽风毛菊",A!=1))
+anova(model)
+model <- lmer(biomass~B+(1|Block),population %>% filter(Fencing==0,N==1,Species=="美丽风毛菊",A!=1))
+anova(model)
+model <- lmer(biomass~B+(1|Block),population %>% filter(Fencing==1,N==0,Species=="美丽风毛菊",A!=1))
+anova(model)
+model <- lmer(biomass~B+(1|Block),population %>% filter(Fencing==1,N==1,Species=="美丽风毛菊",A!=1))
+anova(model)
+
+model <- lmer(biomass~A+(1|Block),population %>% filter(Fencing==0,N==0,Species=="麻花艽",B!=1))
+anova(model)
+model <- lmer(biomass~A+(1|Block),population %>% filter(Fencing==0,N==1,Species=="麻花艽",B!=1))
+anova(model)
+model <- lmer(biomass~A+(1|Block),population %>% filter(Fencing==1,N==0,Species=="麻花艽",B!=1))
+anova(model)
+model <- lmer(biomass~A+(1|Block),population %>% filter(Fencing==1,N==1,Species=="麻花艽",B!=1))
+anova(model)
+
+model <- lmer(biomass~B+(1|Block),population %>% filter(Fencing==0,N==0,Species=="麻花艽",A!=1))
+anova(model)
+model <- lmer(biomass~B+(1|Block),population %>% filter(Fencing==0,N==1,Species=="麻花艽",A!=1))
+anova(model)
+model <- lmer(biomass~B+(1|Block),population %>% filter(Fencing==1,N==0,Species=="麻花艽",A!=1))
+anova(model)
+model <- lmer(biomass~B+(1|Block),population %>% filter(Fencing==1,N==1,Species=="麻花艽",A!=1))
+anova(model)
+
+model <- lmer(biomass~A+(1|Block),population %>% filter(Fencing==0,N==0,Species=="棘豆",B!=1))
+anova(model)
+model <- lmer(biomass~A+(1|Block),population %>% filter(Fencing==0,N==1,Species=="棘豆",B!=1))
+anova(model)
+model <- lmer(biomass~A+(1|Block),population %>% filter(Fencing==1,N==0,Species=="棘豆",B!=1))
+anova(model)
+model <- lmer(biomass~A+(1|Block),population %>% filter(Fencing==1,N==1,Species=="棘豆",B!=1))
+anova(model)
+
+model <- lmer(biomass~B+(1|Block),population %>% filter(Fencing==0,N==0,Species=="棘豆",A!=1))
+anova(model)
+model <- lmer(biomass~B+(1|Block),population %>% filter(Fencing==0,N==1,Species=="棘豆",A!=1))
+anova(model)
+model <- lmer(biomass~B+(1|Block),population %>% filter(Fencing==1,N==0,Species=="棘豆",A!=1))
+anova(model)
+model <- lmer(biomass~B+(1|Block),population %>% filter(Fencing==1,N==1,Species=="棘豆",A!=1))
+anova(model)
+
+model <- lmer(biomass~A+(1|Block),population %>% filter(Fencing==0,N==0,Species=="刺参",B!=1))
+anova(model)
+model <- lmer(biomass~A+(1|Block),population %>% filter(Fencing==0,N==1,Species=="刺参",B!=1))
+anova(model)
+model <- lmer(biomass~A+(1|Block),population %>% filter(Fencing==1,N==0,Species=="刺参",B!=1))
+anova(model)
+model <- lmer(biomass~A+(1|Block),population %>% filter(Fencing==1,N==1,Species=="刺参",B!=1))
+anova(model)
+
+model <- lmer(biomass~B+(1|Block),population %>% filter(Fencing==0,N==0,Species=="刺参",A!=1))
+anova(model)
+model <- lmer(biomass~B+(1|Block),population %>% filter(Fencing==0,N==1,Species=="刺参",A!=1))
+anova(model)
+model <- lmer(biomass~B+(1|Block),population %>% filter(Fencing==1,N==0,Species=="刺参",A!=1))
+anova(model)
+model <- lmer(biomass~B+(1|Block),population %>% filter(Fencing==1,N==1,Species=="刺参",A!=1))
+anova(model)
+
+model <- lmer(biomass~A+(1|Block),population %>% filter(Fencing==0,N==0,Species=="垂穗披碱草",B!=1))
+anova(model)
+model <- lmer(biomass~A+(1|Block),population %>% filter(Fencing==0,N==1,Species=="垂穗披碱草",B!=1))
+anova(model)
+model <- lmer(biomass~A+(1|Block),population %>% filter(Fencing==1,N==0,Species=="垂穗披碱草",B!=1))
+anova(model)
+model <- lmer(biomass~A+(1|Block),population %>% filter(Fencing==1,N==1,Species=="垂穗披碱草",B!=1))
+anova(model)
+
+model <- lmer(biomass~B+(1|Block),population %>% filter(Fencing==0,N==0,Species=="垂穗披碱草",A!=1))
+anova(model)
+model <- lmer(biomass~B+(1|Block),population %>% filter(Fencing==0,N==1,Species=="垂穗披碱草",A!=1))
+anova(model)
+model <- lmer(biomass~B+(1|Block),population %>% filter(Fencing==1,N==0,Species=="垂穗披碱草",A!=1))
+anova(model)
+model <- lmer(biomass~B+(1|Block),population %>% filter(Fencing==1,N==1,Species=="垂穗披碱草",A!=1))
+anova(model)
+population$Fencing <- as.factor(population$Fencing)
+population$A <- as.factor(population$A)
+population$B <- as.factor(population$B)
+population$N <- as.factor(population$N)
+Slabs <- c("Stipa aliena",
+           "Morina kokonorica",
+           "Elymus nutans",
+           "Saussurea nigrescens",
+           "Oxytropis ochrocephala",
+           "Saussurea pulchra",
+           "Gentiana straminea",
+           "Poa annua")
+names(Slabs) <- c("异针茅","刺参","垂穗披碱草","瑞苓草","棘豆","美丽风毛菊","麻花艽","早熟禾")
+
+population$Fencing <- as.factor(population$Fencing)
+population$A <- as.factor(population$A)
+population$B <- as.factor(population$B)
+population$N <- as.factor(population$N)
+
+Flabs <- c("Ambient","Herbivores enclosure")
+names(Flabs) <- c("0","1")
+pa <- population %>% group_by(Species,Fencing,A,B,N) %>% filter(B!=1) %>% 
+  summarise(mean=mean(biomass),se=sd(biomass)/sqrt(6)) %>% as.data.frame() %>% ggplot(aes(N,mean,color=A))+
+  geom_point(size=4,position = position_dodge(0.4))+
+  geom_errorbar(aes(x=N,ymin=mean-1.96*se,ymax=mean+1.96*se),position = position_dodge(0.4),width=0.2)+
+  facet_wrap(Species~Fencing,ncol = 4,labeller = labeller(Fencing=Flabs,Species=Slabs),scales = "free")+
+  scale_x_discrete(name="",labels=c("Control","Fertilized"))+
+  scale_colour_manual(values = c("green4","tan4"),name="",labels=c("Control","Fungal pathogens exclusion"))+
+  labs(y="Fungal pathogens exclusion effect on species biomass")+theme1+
+  theme(legend.position = "top",
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 0),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid"))
+topptx(pa,'Plot3/Biomass~species-A.pptx',width = 13,height = 16,units = c('cm'))
+
+pb <- population %>% group_by(Species,Fencing,A,B,N) %>% filter(A!=1) %>% 
+  summarise(mean=mean(biomass),se=sd(biomass)/sqrt(6)) %>% as.data.frame() %>% ggplot(aes(N,mean,color=B))+
+  geom_point(size=4,position = position_dodge(0.4))+
+  geom_errorbar(aes(x=N,ymin=mean-1.96*se,ymax=mean+1.96*se),position = position_dodge(0.4),width=0.2)+
+  facet_wrap(Species~Fencing,ncol = 4,labeller = labeller(Fencing=Flabs,Species=Slabs),scales = "free")+
+  scale_x_discrete(name="",labels=c("Control","Fertilized"))+
+  scale_colour_manual(values = c("green4","tan4"),name="",labels=c("Control","Oomycete pathogens exclusion"))+
+  labs(y="Oomycete pathogens exclusion effect on species biomass")+theme1+
+  theme(legend.position = "top",
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 0),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid"))
+topptx(pb,'Plot3/Biomass~species-B.pptx',width = 13,height = 16,units = c('cm'))
+chkahu
+
