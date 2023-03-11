@@ -51,21 +51,19 @@ Com <- biomass2022 %>%
   spread(key = "Species",value = "biomass") %>% na.zero()
 
 SR <- specnumber(Com[,-1],MARGIN = 1)
-SR <- as.data.frame(SR,Com[,1])
 Shannon <- diversity(Com[,-1],MARGIN = 1)
 Simpson <- diversity(Com[,-1],MARGIN = 1,index = "simp")
 Pielou <- Shannon/log(SR)
-SR$Plot <- Com$Plot
+Diversity <- data.frame(SR,Shannon,Simpson,Pielou,Com[,1])
+Diversity$Plot <- Com$Plot
 
-Result <- Biomass %>% left_join(SR)%>% left_join(PL) %>% left_join(Litter) %>% 
+Result <- Biomass %>% left_join(Diversity)%>% left_join(PL) %>% left_join(Litter) %>% 
   left_join(CWM) #%>% write.csv("Result_Biomass.csv")
 
 ### calculate CWM CWM_fixed and ITV  ####
 
 trait <- read_xlsx("data0\\trait.xlsx")%>%
   mutate(LDMC=dry_weight/fresh_weight)
-
-## corrplot
 
 trait_mean <- trait %>% group_by(Treat,Fencing,Species) %>% 
   summarise(Thick=mean(Thick,na.rm=TRUE),
@@ -157,9 +155,10 @@ CWM <- CWM.biomass_2022 %>% left_join(CWM_fixed) %>%
          ITV_N_height=CWM_N_height-N_height,
          ITV_M_height=CWM_M_height-M_height,
          ITV_LDMC=CWM_LDMC-LDMC,
-         ITV_SLA=CWM_SLA-SLA) %>% write.csv("Plot3/CWM2.csv")
+         ITV_SLA=CWM_SLA-SLA) #%>% write.csv("Plot3/CWM2.csv")
 
-
+Result <- Biomass %>% left_join(Diversity)%>% left_join(PL) %>% left_join(Litter) %>% 
+  left_join(CWM)%>% write.csv("Plot3/CWM2.csv")
 
 
 ### Result data  ####
@@ -199,7 +198,7 @@ adonis2(ComB[,-1]~Fencing*B*N,ResultB)
 
 
 ## Linear mixed model   ####
-## Biomass ~ Treatment  ####
+## SR,PL,Biomass ~ Treatment  ####
 hist(resid(model))
 shapiro.test(resid(model))
 
@@ -362,7 +361,7 @@ Group$B <- as.factor(Group$B)
 Group$N <- as.factor(Group$N)
 
 
-p1 <- ResultA %>% 
+p1 <- ResultA %>% ## 画之前运行455行
   group_by(Fencing,N,A) %>% 
   summarise(mean1=mean(Biomass),se1=se(Biomass))%>% 
   ggplot(aes(N,mean1,color=N,shape=A))+geom_point(size=4,position = position_dodge(0.7))+
@@ -570,7 +569,7 @@ p1 <- ResultA %>% filter(Fencing=="Ambient") %>%
         axis.text.x = element_text(angle = 0),
         panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid")) 
 
-p2 <- Group %>% filter(B!=1,Fencing=="Ambient",Grass=="Grass") %>% group_by(Treat,A,N,Fencing,Grass) %>% 
+p2 <- Group %>% filter(B!=1,Fencing=="Ambient",Grass=="Grass") %>% group_by(Treat,A,N,Fencing,Grass) %>% ## 画之前运行317行
   summarise(mean=mean(Biomass),se=se(Biomass))%>% 
   ggplot(aes(N,mean,color=A,shape=A))+
   geom_point(size=6,position = position_dodge(0.7))+
@@ -837,9 +836,9 @@ multigroup(model,group = "A")
 
 
 model <- psem(lme(Biomass~Shannon+ITV_N_height+Fencing,random = ~1|Block,
-                  data=SEMB %>% filter(N!=1)),
-              lme(Shannon~Fencing,random = ~1|Block,data=SEMB %>% filter(N!=1)),
-              lme(ITV_N_height~Fencing,random = ~1|Block,data=SEMB %>% filter(N!=1)))
+                  data=SEMB %>% mutate(M=1-Fencing) %>% filter(N!=1)),
+              lme(Shannon~Fencing,random = ~1|Block,data=SEMB %>% mutate(M=1-Fencing) %>% filter(N!=1)),
+              lme(ITV_N_height~Fencing,random = ~1|Block,data=SEMB %>% mutate(M=1-Fencing) %>% filter(N!=1)))
 summary(model)
 multigroup(model,group = "B")
 
@@ -873,6 +872,196 @@ model <- psem(lme(Biomass~SR+N_height+O*M+N+O*N,random = ~1|Block,data=SEMB),
               lme(SR~O*M+N+M+O*N,random = ~1|Block,data=SEMB),
               lme(N_height~O*M+O*N,random = ~1|Block,data=SEMB))
 summary(model)
+
+
+## CWM~Treatment2    ####
+Result_biomass <- SEM
+
+Result_biomass$Fencing[which(Result_biomass$Fencing=="1")] <- "Herbivores enclosure"
+Result_biomass$Fencing[which(Result_biomass$Fencing=="0")] <- "Ambient"
+
+Result_biomass$Treat <- factor(Result_biomass$Treat,levels = 
+                                 c("CK","A","B","N","N+A","N+B"))
+Result_biomass$Fencing <- as.factor(Result_biomass$Fencing)
+Result_biomass$A <- as.factor(Result_biomass$A)
+Result_biomass$B <- as.factor(Result_biomass$B)
+Result_biomass$N <- as.factor(Result_biomass$N)
+
+ResultA <- Result_biomass %>% filter(B!=1)
+ResultB <- Result_biomass %>% filter(A!=1)
+
+p1 <- ResultA %>% select(Fencing,N,A,LDMC,SLA,Thick,N_height,M_height,ITV_LDMC,ITV_SLA,ITV_Thick,ITV_N_height,ITV_M_height) %>% filter(Fencing!="Herbivores enclosure") %>% 
+  group_by(Fencing,N,A) %>% 
+  summarise(mean1=mean(M_height),se1=se(M_height))%>% ggplot(aes(N,mean1,color=A,shape=A))+geom_point(size=6,position = position_dodge(0.7))+
+  geom_linerange(aes(min=mean1-se1, max=mean1+se1),position = position_dodge(0.7), size=1.2) +
+  scale_color_viridis(discrete=TRUE, option = 'viridis')+
+  scale_x_discrete(name="",labels=c("Control","Nitrogen"))+
+  #facet_wrap(~Fencing)+
+  labs(x="",y="CWMfixed of maximum height")+theme1+
+  theme(legend.position = "top",
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 0),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid")) 
+p2 <- ResultA %>% select(Fencing,N,A,LDMC,SLA,Thick,N_height,M_height,ITV_LDMC,ITV_SLA,ITV_Thick,ITV_N_height,ITV_M_height)%>% filter(Fencing!="Herbivores enclosure") %>% 
+  group_by(Fencing,N,A) %>% 
+  summarise(mean1=mean(ITV_M_height),se1=se(ITV_M_height))%>% ggplot(aes(N,mean1,color=A,shape=A))+geom_point(size=6,position = position_dodge(0.7))+
+  geom_linerange(aes(min=mean1-se1, max=mean1+se1),position = position_dodge(0.7), size=1.2) +
+  scale_color_viridis(discrete=TRUE, option = 'viridis')+
+  scale_x_discrete(name="",labels=c("Control","Nitrogen"))+
+  #facet_grid(~Fencing)+
+  #ylim(0,12)+
+  labs(x="",y="ITV of maximum height")+theme1+
+  theme(legend.position = "top",
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 0),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid")) 
+
+p3 <- ResultB %>% select(Fencing,N,B,LDMC,SLA,Thick,N_height,M_height,ITV_LDMC,ITV_SLA,ITV_Thick,ITV_N_height,ITV_M_height) %>% filter(N!="1")%>% 
+  group_by(Fencing,N,B) %>% 
+  summarise(mean1=mean(M_height),se1=se(M_height))%>% ggplot(aes(Fencing,mean1,color=B,shape=B))+geom_point(size=6,position = position_dodge(0.7))+
+  geom_linerange(aes(min=mean1-se1, max=mean1+se1),position = position_dodge(0.7), size=1.2) +
+  scale_color_viridis(discrete=TRUE, option = 'viridis')+
+  scale_x_discrete(name="",labels=c("Control","Enclosure"))+
+  scale_shape_manual(values = c(19,15))+
+  #facet_wrap(~Fencing)+
+  #ylim(15,20)+
+  labs(x="",y="CWMfixed of maximum height")+theme1+
+  theme(legend.position = "top",
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 0),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid")) 
+p4 <- ResultB %>% select(Fencing,N,B,LDMC,SLA,Thick,N_height,M_height,ITV_LDMC,ITV_SLA,ITV_Thick,ITV_N_height,ITV_M_height) %>% filter(N!="1")%>% 
+  group_by(Fencing,N,B) %>% 
+  summarise(mean1=mean(ITV_M_height),se1=se(ITV_M_height))%>% ggplot(aes(Fencing,mean1,color=B,shape=B))+geom_point(size=6,position = position_dodge(0.7))+
+  geom_linerange(aes(min=mean1-se1, max=mean1+se1),position = position_dodge(0.7), size=1.2) +
+  scale_color_viridis(discrete=TRUE, option = 'viridis')+
+  scale_x_discrete(name="",labels=c("Control","Enclosure"))+
+  scale_shape_manual(values = c(19,15))+
+  #facet_grid(~Fencing)+
+  labs(x="",y="ITV of maximum height")+theme1+
+  theme(legend.position = "top",
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 0),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid")) 
+p5 <- ResultA %>% select(Fencing,N,A,CWM_N_height,CWM_M_height,LDMC,SLA,Thick,N_height,M_height,ITV_LDMC,ITV_SLA,ITV_Thick,ITV_N_height,ITV_M_height)%>% filter(Fencing!="Herbivores enclosure") %>% 
+  group_by(Fencing,N,A) %>% 
+  summarise(mean1=mean(CWM_M_height),se1=se(CWM_M_height))%>% ggplot(aes(N,mean1,color=A,shape=A))+geom_point(size=6,position = position_dodge(0.7))+
+  geom_linerange(aes(min=mean1-se1, max=mean1+se1),position = position_dodge(0.7), size=1.2) +
+  scale_color_viridis(discrete=TRUE, option = 'viridis')+
+  scale_x_discrete(name="",labels=c("Control","Nitrogen"))+
+  #facet_grid(~Fencing)+
+  labs(x="",y="CWM of maximum height")+theme1+
+  theme(legend.position = "top",
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 0),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid")) 
+
+p6 <- ResultB %>% select(Fencing,N,B,CWM_N_height,CWM_M_height,LDMC,SLA,Thick,N_height,M_height,ITV_LDMC,ITV_SLA,ITV_Thick,ITV_N_height,ITV_M_height) %>% filter(N!="1")%>% 
+  group_by(Fencing,N,B) %>% 
+  summarise(mean1=mean(CWM_M_height),se1=se(CWM_M_height))%>% ggplot(aes(Fencing,mean1,color=B,shape=B))+geom_point(size=6,position = position_dodge(0.7))+
+  geom_linerange(aes(min=mean1-se1, max=mean1+se1),position = position_dodge(0.7), size=1.2) +
+  scale_color_viridis(discrete=TRUE, option = 'viridis')+
+  scale_x_discrete(name="",labels=c("Control","Enclosure"))+
+  scale_shape_manual(values = c(19,15))+
+  #facet_wrap(~Fencing)+
+  #ylim(16,24)+
+  labs(x="",y="CWM of maximum height")+theme1+
+  theme(legend.position = "top",
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 0),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid")) 
+
+
+p0 <- ggarrange(p5,p1,p2,p6,p3,p4,nrow = 2,ncol = 3,align = "hv",legend = "top",common.legend = T,hjust = 0)
+
+topptx(p0,"Plot3/Effectvalue_CWM_M_heighth3.pptx",height=12,width=16)
+
+p1 <- ResultA %>% select(Fencing,N,A,LDMC,SLA,Thick,N_height,M_height,ITV_LDMC,ITV_SLA,ITV_Thick,ITV_N_height,ITV_M_height) %>% filter(Fencing!="Herbivores enclosure") %>% 
+  group_by(Fencing,N,A) %>% 
+  summarise(mean1=mean(N_height),se1=se(N_height))%>% ggplot(aes(N,mean1,color=A,shape=A))+geom_point(size=6,position = position_dodge(0.7))+
+  geom_linerange(aes(min=mean1-se1, max=mean1+se1),position = position_dodge(0.7), size=1.2) +
+  scale_color_viridis(discrete=TRUE, option = 'viridis')+
+  scale_x_discrete(name="",labels=c("Control","Nitrogen"))+
+  #facet_wrap(~Fencing)+
+  labs(x="",y="CWMfixed of natural height")+theme1+
+  theme(legend.position = "top",
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 0),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid")) 
+p2 <- ResultA %>% select(Fencing,N,A,LDMC,SLA,Thick,N_height,M_height,ITV_LDMC,ITV_SLA,ITV_Thick,ITV_N_height,ITV_M_height)%>% filter(Fencing!="Herbivores enclosure") %>% 
+  group_by(Fencing,N,A) %>% 
+  summarise(mean1=mean(ITV_N_height),se1=se(ITV_N_height))%>% ggplot(aes(N,mean1,color=A,shape=A))+geom_point(size=6,position = position_dodge(0.7))+
+  geom_linerange(aes(min=mean1-se1, max=mean1+se1),position = position_dodge(0.7), size=1.2) +
+  scale_color_viridis(discrete=TRUE, option = 'viridis')+
+  scale_x_discrete(name="",labels=c("Control","Nitrogen"))+
+  #facet_grid(~Fencing)+
+  #ylim(0,12)+
+  labs(x="",y="ITV of natural height")+theme1+
+  theme(legend.position = "top",
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 0),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid")) 
+
+p3 <- ResultB %>% select(Fencing,N,B,LDMC,SLA,Thick,N_height,M_height,ITV_LDMC,ITV_SLA,ITV_Thick,ITV_N_height,ITV_M_height) %>% filter(N!="1")%>% 
+  group_by(Fencing,N,B) %>% 
+  summarise(mean1=mean(N_height),se1=se(N_height))%>% ggplot(aes(Fencing,mean1,color=B,shape=B))+geom_point(size=6,position = position_dodge(0.7))+
+  geom_linerange(aes(min=mean1-se1, max=mean1+se1),position = position_dodge(0.7), size=1.2) +
+  scale_color_viridis(discrete=TRUE, option = 'viridis')+
+  scale_x_discrete(name="",labels=c("Control","Enclosure"))+
+  scale_shape_manual(values = c(19,15))+
+  #facet_wrap(~Fencing)+
+  #ylim(15,20)+
+  labs(x="",y="CWMfixed of natural height")+theme1+
+  theme(legend.position = "top",
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 0),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid")) 
+p4 <- ResultB %>% select(Fencing,N,B,LDMC,SLA,Thick,N_height,M_height,ITV_LDMC,ITV_SLA,ITV_Thick,ITV_N_height,ITV_M_height) %>% filter(N!="1")%>% 
+  group_by(Fencing,N,B) %>% 
+  summarise(mean1=mean(ITV_N_height),se1=se(ITV_N_height))%>% ggplot(aes(Fencing,mean1,color=B,shape=B))+geom_point(size=6,position = position_dodge(0.7))+
+  geom_linerange(aes(min=mean1-se1, max=mean1+se1),position = position_dodge(0.7), size=1.2) +
+  scale_color_viridis(discrete=TRUE, option = 'viridis')+
+  scale_x_discrete(name="",labels=c("Control","Enclosure"))+
+  scale_shape_manual(values = c(19,15))+
+  #facet_grid(~Fencing)+
+  labs(x="",y="ITV of natural height")+theme1+
+  theme(legend.position = "top",
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 0),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid")) 
+p5 <- ResultA %>% select(Fencing,N,A,CWM_N_height,LDMC,SLA,Thick,N_height,M_height,ITV_LDMC,ITV_SLA,ITV_Thick,ITV_N_height,ITV_M_height)%>% filter(Fencing!="Herbivores enclosure") %>% 
+  group_by(Fencing,N,A) %>% 
+  summarise(mean1=mean(CWM_N_height),se1=se(CWM_N_height))%>% ggplot(aes(N,mean1,color=A,shape=A))+geom_point(size=6,position = position_dodge(0.7))+
+  geom_linerange(aes(min=mean1-se1, max=mean1+se1),position = position_dodge(0.7), size=1.2) +
+  scale_color_viridis(discrete=TRUE, option = 'viridis')+
+  scale_x_discrete(name="",labels=c("Control","Nitrogen"))+
+  #facet_grid(~Fencing)+
+  labs(x="",y="CWM of natural height")+theme1+
+  theme(legend.position = "top",
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 0),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid")) 
+
+p6 <- ResultB %>% select(Fencing,N,B,CWM_N_height,LDMC,SLA,Thick,N_height,M_height,ITV_LDMC,ITV_SLA,ITV_Thick,ITV_N_height,ITV_M_height) %>% filter(N!="1")%>% 
+  group_by(Fencing,N,B) %>% 
+  summarise(mean1=mean(CWM_N_height),se1=se(CWM_N_height))%>% ggplot(aes(Fencing,mean1,color=B,shape=B))+geom_point(size=6,position = position_dodge(0.7))+
+  geom_linerange(aes(min=mean1-se1, max=mean1+se1),position = position_dodge(0.7), size=1.2) +
+  scale_color_viridis(discrete=TRUE, option = 'viridis')+
+  scale_x_discrete(name="",labels=c("Control","Enclosure"))+
+  scale_shape_manual(values = c(19,15))+
+  #facet_wrap(~Fencing)+
+  #ylim(16,24)+
+  labs(x="",y="CWM of natural height")+theme1+
+  theme(legend.position = "top",
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 0),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid")) 
+
+
+p0 <- ggarrange(p5,p1,p2,p6,p3,p4,nrow = 2,ncol = 3,align = "hv",legend = "top",common.legend = T,hjust = 0)
+
+topptx(p0,"Plot3/Effectvalue_CWM_N_heighth3.pptx",height=12,width=16)
+
 
 ## Population level  ####
 
